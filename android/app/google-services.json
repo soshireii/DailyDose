@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "83589908302",
+    "project_id": "medicine-tracker-9f7ed",
+    "storage_bucket": "medicine-tracker-9f7ed.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:83589908302:android:5da38eefc27b4ab60c401f",
+        "android_client_info": {
+          "package_name": "com.yourname.medicine_tracker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1unpAnSEgPnWrmhss0Pv_u6OTBtXDeNE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
