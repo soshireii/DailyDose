@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
@@ -9,6 +10,8 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/format_utils.dart';
 import '../../core/utils/time_utils.dart';
 import '../../models/medicine.dart';
+import '../../models/medicine_suggestion.dart';
+import '../../services/medicine_lookup_service.dart';
 import '../../viewmodels/medicine_form_viewmodel.dart';
 import '../../viewmodels/medicine_viewmodel.dart';
 
@@ -46,8 +49,15 @@ class _MedicineFormBodyState extends State<_MedicineFormBody> {
   late final TextEditingController _quantity;
   late final TextEditingController _lowStock;
   late final TextEditingController _notes;
+  final _nameFocus = FocusNode();
+  final _lookupService = MedicineLookupService();
+
   bool _saving = false;
   bool _pickingImage = false;
+  bool _suggestionsLoading = false;
+  bool _suppressNextSearch = false;
+  List<MedicineSuggestion> _suggestions = const [];
+  Timer? _debounce;
 
   @override
   void initState() {
@@ -61,16 +71,23 @@ class _MedicineFormBodyState extends State<_MedicineFormBody> {
       text: formatAmount(m?.lowStockThreshold ?? 5),
     );
     _notes = TextEditingController(text: m?.notes ?? '');
+    _name.addListener(_onNameChanged);
+    _nameFocus.addListener(() {
+      if (mounted) setState(() {}); // show/hide the suggestion panel
+    });
   }
 
   @override
   void dispose() {
+    _debounce?.cancel();
+    _name.removeListener(_onNameChanged);
     _name.dispose();
     _strength.dispose();
     _dose.dispose();
     _quantity.dispose();
     _lowStock.dispose();
     _notes.dispose();
+    _nameFocus.dispose();
     super.dispose();
   }
 
@@ -94,6 +111,44 @@ class _MedicineFormBodyState extends State<_MedicineFormBody> {
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
   }
+
+  // -------------------------------------------------------- name lookup
+
+  void _onNameChanged() {
+    if (_suppressNextSearch) {
+      _suppressNextSearch = false;
+      return;
+    }
+    _debounce?.cancel();
+    final query = _name.text;
+    _debounce = Timer(const Duration(milliseconds: 350), () => _search(query));
+  }
+
+  Future<void> _search(String query) async {
+    if (query.trim().length < 2) {
+      if (mounted) setState(() => _suggestions = const []);
+      return;
+    }
+    setState(() => _suggestionsLoading = true);
+    final results = await _lookupService.search(query);
+    if (!mounted) return;
+    setState(() {
+      _suggestions = results;
+      _suggestionsLoading = false;
+    });
+  }
+
+  void _selectSuggestion(MedicineSuggestion s) {
+    _suppressNextSearch = true;
+    _name.text = s.name;
+    _name.selection = TextSelection.collapsed(offset: _name.text.length);
+    if (s.strength.isNotEmpty) _strength.text = s.strength;
+    context.read<MedicineFormViewModel>().setUnit(s.unit);
+    setState(() => _suggestions = const []);
+    _nameFocus.unfocus();
+  }
+
+  // -------------------------------------------------------- other fields
 
   Future<void> _addTime() async {
     final form = context.read<MedicineFormViewModel>();
@@ -170,6 +225,8 @@ class _MedicineFormBodyState extends State<_MedicineFormBody> {
     final form = context.watch<MedicineFormViewModel>();
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final showSuggestions =
+        _nameFocus.hasFocus && (_suggestionsLoading || _suggestions.isNotEmpty);
 
     Widget section(String title, List<Widget> children) => Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -277,12 +334,91 @@ class _MedicineFormBodyState extends State<_MedicineFormBody> {
                   section('Medicine', [
                     TextFormField(
                       controller: _name,
+                      focusNode: _nameFocus,
                       textCapitalization: TextCapitalization.words,
                       textInputAction: TextInputAction.next,
-                      decoration: const InputDecoration(labelText: 'Name'),
+                      decoration: InputDecoration(
+                        labelText: 'Name',
+                        suffixIcon: _suggestionsLoading
+                            ? const Padding(
+                                padding: EdgeInsets.all(14),
+                                child: SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              )
+                            : const Icon(Icons.search),
+                      ),
                       validator: (v) => (v == null || v.trim().isEmpty)
                           ? 'Enter the medicine name.'
                           : null,
+                    ),
+                    if (showSuggestions)
+                      Container(
+                        margin: const EdgeInsets.only(top: 4),
+                        constraints: const BoxConstraints(maxHeight: 240),
+                        decoration: BoxDecoration(
+                          color: scheme.surfaceContainerHighest,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: scheme.outlineVariant),
+                        ),
+                        child: _suggestionsLoading && _suggestions.isEmpty
+                            ? Padding(
+                                padding: const EdgeInsets.all(14),
+                                child: Text(
+                                  'Searching…',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: scheme.onSurfaceVariant,
+                                  ),
+                                ),
+                              )
+                            : ListView.separated(
+                                shrinkWrap: true,
+                                padding: EdgeInsets.zero,
+                                itemCount: _suggestions.length,
+                                separatorBuilder: (_, _) => Divider(
+                                  height: 1,
+                                  color: scheme.outlineVariant,
+                                ),
+                                itemBuilder: (context, i) {
+                                  final s = _suggestions[i];
+                                  final meta = [
+                                    if (s.strength.isNotEmpty) s.strength,
+                                    if (s.dosageForm.isNotEmpty) s.dosageForm,
+                                  ].join(' • ');
+                                  // onTapDown (not onTap): the field loses
+                                  // focus as soon as the user touches down,
+                                  // which would hide this list before a
+                                  // plain onTap fires.
+                                  return GestureDetector(
+                                    behavior: HitTestBehavior.opaque,
+                                    onTapDown: (_) => _selectSuggestion(s),
+                                    child: ListTile(
+                                      dense: true,
+                                      title: Text(
+                                        s.name,
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w600,
+                                            ),
+                                      ),
+                                      subtitle: meta.isEmpty
+                                          ? null
+                                          : Text(meta),
+                                    ),
+                                  );
+                                },
+                              ),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Start typing to look up real medicine names and strengths (needs internet).',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                     const SizedBox(height: 16),
                     TextFormField(
